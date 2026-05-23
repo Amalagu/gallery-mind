@@ -107,10 +107,17 @@ class EmbeddingIndex {
     _initialized = true;
   }
 
+  Future<void> initializeTextSearch() async {
+    // Preloads the CLIP text model without forcing Home to wait for the first
+    // submitted query. If this fails, the actual search call will still report
+    // the error through its normal path.
+    await _channel.invokeMethod<bool>('initializeTextSearch');
+  }
+
   Future<IndexedImageRecord> indexImage(IndexedImageInput input) async {
-    await initialize();
     // Asset images and byte images use different native methods, but both end
-    // up in the same SQLite embedding store.
+    // up in the same SQLite embedding store. Native code lazily loads only the
+    // model sessions needed for this specific image/caption payload.
     final method =
         input.assetPath != null ? 'indexImageAsset' : 'indexImageBytes';
     final result = await _channel.invokeMethod<Map<Object?, Object?>>(
@@ -147,9 +154,8 @@ class EmbeddingIndex {
     int limit = 30,
     double threshold = 0.5,
   }) async {
-    await initialize();
-    // Native Android embeds the query text, compares it against stored image
-    // embeddings, applies the threshold, and returns ranked rows.
+    // Native Android lazily loads the text model, embeds the query, compares it
+    // against stored embeddings, applies the threshold, and returns ranked rows.
     final rows = await _channel.invokeMethod<List<Object?>>(
       'searchText',
       {
@@ -168,7 +174,6 @@ class EmbeddingIndex {
     double threshold = 0.8,
     int limit = 60,
   }) async {
-    await initialize();
     // This is image-to-image search. It compares one stored image embedding
     // against all other stored image embeddings.
     final rows = await _channel.invokeMethod<List<Object?>>(
@@ -184,7 +189,6 @@ class EmbeddingIndex {
 
   Future<List<IndexedImageRecord>> getAllIndexedImages(
       {int limit = 5000}) async {
-    await initialize();
     // Used by Home and filename search to list images already present in the
     // native embedding database.
     final rows = await _channel.invokeMethod<List<Object?>>(
@@ -243,7 +247,6 @@ class EmbeddingIndex {
     int? limit,
     void Function(IndexProgress progress)? onProgress,
   }) async {
-    await initialize();
     // Native indexing can take a while. We register a callback so Android can
     // push progress events back to Flutter while it works.
     onIndexProgress = onProgress;
@@ -259,13 +262,11 @@ class EmbeddingIndex {
   }
 
   Future<int> count() async {
-    await initialize();
     final count = await _channel.invokeMethod<int>('countIndexedImages');
     return count ?? 0;
   }
 
   Future<void> clear() async {
-    await initialize();
     await _channel.invokeMethod<bool>('clearIndex');
   }
 

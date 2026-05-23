@@ -114,9 +114,13 @@ The bundled Android assets live in `assets/models/tidy/`:
 
 The conversion and quantization workflow is documented in:
 
-```text
-C:\Users\Chike\Downloads\smartgallery\clip-vit-b16-laion2b-s34b-b88k\export_quantize_openclip_vit_b16.ipynb
-```
+- the model asset notes in `assets/models/tidy/README.md`
+- the source model card at
+  [laion/CLIP-ViT-B-16-laion2B-s34B-b88K](https://huggingface.co/laion/CLIP-ViT-B-16-laion2B-s34B-b88K)
+
+The previous TIDY-based ViT-B/32 baseline is preserved on the
+[`tidy-vit-b32`](https://github.com/AMALAGU/gallery-mind/tree/tidy-vit-b32)
+branch.
 
 ## Build
 
@@ -153,14 +157,13 @@ GalleryMind was inspired by:
 
 ## Citation
 
-If you are referencing the inspiration project, cite TIDY:
+If you reference GalleryMind, cite this repository:
 
 ```bibtex
-@Misc{tidy,
-  title =        {TIDY (Text-to-Image Discovery): Offline Semantic Text-to-Image and Image-to-Image Search on Android Powered by the Vision-Language Pretrained CLIP Model.},
-  author =       {Viacheslav Barkov},
-  howpublished = {\url{https://github.com/slavabarkov/tidy}},
-  year =         {2023}
+@Misc{gallerymind,
+  title =        {GalleryMind: On-Device Semantic Gallery Search with Quantized OpenCLIP and ONNX Runtime},
+  author =       {AMALAGU},
+  howpublished = {\url{https://github.com/AMALAGU/gallery-mind}},
+  year =         {2026}
 }
 ```
-

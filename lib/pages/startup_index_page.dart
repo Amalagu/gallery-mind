@@ -122,9 +122,19 @@ class _StartupIndexPageState extends State<StartupIndexPage> {
       );
 
       if (!mounted) return;
+      if (summary.indexed == 0 && summary.failed > 0) {
+        setState(() {
+          _summary = summary;
+          _indexingFailed = true;
+          _bootstrapping = false;
+          _status =
+              'GalleryMind could not index the first images. Please retry after checking photo access.';
+        });
+        return;
+      }
       setState(() {
         _summary = summary;
-        _status = summary.indexed == 0
+        _status = summary.indexed == 0 && summary.failed == 0
             ? 'Gallery index is up to date'
             : 'Ready with ${summary.stored} indexed images';
       });
@@ -133,13 +143,12 @@ class _StartupIndexPageState extends State<StartupIndexPage> {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(builder: (_) => const GalleryShell()),
       );
-    } catch (_) {
+    } catch (error) {
       if (!mounted) return;
       setState(() {
         _indexingFailed = true;
         _bootstrapping = false;
-        _status =
-            'Indexing paused before it finished. You can retry, or continue with what is already indexed.';
+        _status = 'Indexing paused: $error';
       });
     }
   }

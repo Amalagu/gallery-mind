@@ -9,6 +9,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.MediaStore
+import android.util.Log
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -28,18 +29,42 @@ class ClipOnnxBridge(private val context: Context) {
 
     @Synchronized
     fun initialize() {
-        // ONNX sessions are expensive to create, so initialize once and reuse
-        // them for every search/index operation.
-        if (textSession != null && imageSession != null && tokenizer != null) return
+        // Search needs both model halves, while gallery indexing can load only
+        // the visual half. Keep this as the full initialization path for calls
+        // that genuinely need text and image embeddings.
+        initializeImageModel()
+        initializeTextModel()
+    }
 
-        // These are the quantized CLIP model files bundled under Flutter assets.
+    fun initializeTextSearch() {
+        // Flutter calls this shortly after Home opens so the first user search
+        // does not have to wait for tokenizer/model startup.
+        initializeTextModel()
+    }
+
+    @Synchronized
+    private fun initializeTextModel() {
+        // The text model is lazy-loaded. This keeps first-launch indexing from
+        // waiting on an ONNX session it does not need yet.
+        if (textSession != null && tokenizer != null) return
+        Log.i(LogTag, "Loading CLIP text model")
         textSession = env.createSession(readFlutterAsset("assets/models/tidy/textual_quant.onnx"))
-        imageSession = env.createSession(readFlutterAsset("assets/models/tidy/visual_quant.onnx"))
         tokenizer = ClipTokenizer(loadVocab(), loadMerges())
+        Log.i(LogTag, "CLIP text model loaded")
+    }
+
+    @Synchronized
+    private fun initializeImageModel() {
+        // Gallery indexing only needs this visual model. Loading it separately
+        // makes the onboarding pass begin much sooner on real devices.
+        if (imageSession != null) return
+        Log.i(LogTag, "Loading CLIP visual model")
+        imageSession = env.createSession(readFlutterAsset("assets/models/tidy/visual_quant.onnx"))
+        Log.i(LogTag, "CLIP visual model loaded")
     }
 
     fun embedText(text: String): FloatArray {
-        initialize()
+        initializeTextModel()
         // CLIP text input is always exactly 77 tokens with start/end tokens and
         // an attention mask that tells the model which positions are real text.
         val tokenIds = tokenizeForClip(text)
@@ -70,13 +95,13 @@ class ClipOnnxBridge(private val context: Context) {
     }
 
     fun embedImageAsset(assetPath: String): FloatArray {
-        initialize()
+        initializeImageModel()
         val bytes = readFlutterAsset(assetPath)
         return embedImageBytes(bytes)
     }
 
     fun embedImageBytes(bytes: ByteArray): FloatArray {
-        initialize()
+        initializeImageModel()
         // Decode arbitrary image bytes into a Bitmap before CLIP preprocessing.
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             ?: throw IllegalArgumentException("Unable to decode image bytes")
@@ -84,7 +109,7 @@ class ClipOnnxBridge(private val context: Context) {
     }
 
     fun embedImageUri(uri: Uri): FloatArray {
-        initialize()
+        initializeImageModel()
         // MediaStore images can be huge. Decode a sampled bitmap first to avoid
         // out-of-memory crashes on real devices.
         return embedBitmap(decodeSampledBitmap(uri, 768))
@@ -159,8 +184,11 @@ class ClipOnnxBridge(private val context: Context) {
         captionWeight: Double,
         threshold: Double,
     ): List<Map<String, Any>> {
+        val startMillis = System.currentTimeMillis()
+        Log.i(LogTag, "Text search started: query='$query', limit=$limit, threshold=$threshold")
         val queryEmbedding = embedText(query)
-        return embeddingStore.getAll()
+        val records = embeddingStore.getAll()
+        val ranked = records
             .map { record ->
                 // Query text is compared to the actual image embedding and,
                 // when available, to the caption/title/tag text embedding.
@@ -180,10 +208,25 @@ class ClipOnnxBridge(private val context: Context) {
                     },
                 )
             }
-            .filter { it.combinedScore >= threshold }
             .sortedByDescending { it.combinedScore }
+        val filtered = ranked.filter { it.combinedScore >= threshold }
+        val selected = if (filtered.isNotEmpty()) {
+            filtered
+        } else {
+            // If the on-device text side gives slightly lower scores than the
+            // desktop export sanity check, avoid showing a dead search screen.
+            // The original score is still returned so the UI can display true
+            // confidence values.
+            ranked.take(minOf(limit, SearchFallbackLimit))
+        }
+        val results = selected
             .take(limit)
             .map { it.toMap() }
+        Log.i(
+            LogTag,
+            "Text search finished: query='$query', records=${records.size}, filtered=${filtered.size}, results=${results.size}, topScore=${ranked.firstOrNull()?.combinedScore ?: 0.0}, elapsedMs=${System.currentTimeMillis() - startMillis}",
+        )
+        return results
     }
 
     fun findSimilarImages(
@@ -241,7 +284,6 @@ class ClipOnnxBridge(private val context: Context) {
         limit: Int? = null,
         onProgress: (Map<String, Any>) -> Unit,
     ): Map<String, Any> {
-        initialize()
         // Query Android MediaStore for every gallery image, then skip anything
         // already present in the local SQLite index.
         val candidates = getGalleryCandidates()
@@ -258,12 +300,27 @@ class ClipOnnxBridge(private val context: Context) {
             if (limit != null) filtered.take(limit) else filtered
         }
 
+        Log.i(
+            LogTag,
+            "Indexing gallery images: total=${candidates.size}, pending=${pending.size}, skipped=$skipped, limit=$limit",
+        )
+        onProgress(
+            mapOf(
+                "completed" to 0,
+                "total" to pending.size,
+                "indexed" to 0,
+                "skipped" to skipped,
+                "failed" to 0,
+                "currentId" to "",
+            ),
+        )
+
         var indexed = 0
         var failed = 0
         pending.forEachIndexed { index, candidate ->
             try {
-                // Device gallery images currently use filename/title as the
-                // only caption text; description/tags are left empty for now.
+                // Device gallery filenames stay available for literal filename
+                // search, but are not embedded as caption text.
                 indexImageUri(
                     id = candidate.indexId,
                     uri = candidate.uri,
@@ -273,8 +330,9 @@ class ClipOnnxBridge(private val context: Context) {
                     dateTakenMillis = candidate.dateTakenMillis,
                 )
                 indexed += 1
-            } catch (_: Throwable) {
+            } catch (error: Throwable) {
                 failed += 1
+                Log.w(LogTag, "Failed to index ${candidate.indexId}: ${error.message}", error)
             }
 
             onProgress(
@@ -338,9 +396,10 @@ class ClipOnnxBridge(private val context: Context) {
         imageEmbedding: FloatArray,
     ): Map<String, Any> {
         // Store a visual embedding for the image and a second optional embedding
-        // for any title/description/tags. Blank caption text becomes a zero
-        // vector so searchText knows not to apply caption weighting.
-        val captionText = listOf(title, description, tags.joinToString(" "))
+        // for real descriptive text. The filename/title is kept for display and
+        // literal filename search, but it should not consume the 0.3 caption
+        // weight in semantic ranking.
+        val captionText = listOf(description, tags.joinToString(" "))
             .filter { it.isNotBlank() }
             .joinToString(" ")
         val captionEmbedding = if (captionText.isBlank()) {
@@ -548,7 +607,7 @@ class ClipOnnxBridge(private val context: Context) {
 
     private fun hasEmbeddingSignal(values: FloatArray): Boolean {
         // A blank caption is stored as all zeroes; any non-trivial value means
-        // caption/title/tag text should contribute to search ranking.
+        // description/tag text should contribute to search ranking.
         return values.any { kotlin.math.abs(it) > 0.000001f }
     }
 
@@ -574,6 +633,8 @@ class ClipOnnxBridge(private val context: Context) {
         private const val ClipTextLength = 77
         private const val TokenStartOfText = 49406
         private const val TokenEndOfText = 49407
+        private const val SearchFallbackLimit = 60
+        private const val LogTag = "GalleryMindClip"
         private val TextCleanupRegex = Regex("[^A-Za-z0-9 ]")
     }
 }

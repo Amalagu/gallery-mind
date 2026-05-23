@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../data/sample_gallery.dart';
@@ -56,7 +58,9 @@ class HomePageState extends State<HomePage> {
     _searchFocusNode.addListener(_handleSearchFocusChanged);
     _scrollController.addListener(_handleScroll);
     _loadIndexedImages().then((_) {
-      if (mounted) _startBackgroundIndexing();
+      if (!mounted) return;
+      unawaited(_warmTextSearchModel());
+      _startBackgroundIndexing();
     });
   }
 
@@ -83,6 +87,15 @@ class HomePageState extends State<HomePage> {
   double get _indexingFraction {
     if (_indexingTotal <= 0) return 0;
     return (_indexingStored / _indexingTotal).clamp(0.0, 1.0);
+  }
+
+  Future<void> _warmTextSearchModel() async {
+    try {
+      await _index.initializeTextSearch();
+    } catch (_) {
+      // Search itself still handles/report failures; warming is only an
+      // optimization so it should never block the gallery.
+    }
   }
 
   void _handleSearchTextChanged() {
@@ -255,11 +268,24 @@ class HomePageState extends State<HomePage> {
     });
     // Semantic search uses the CLIP text embedding. Filename matching is a
     // separate literal text search over stored image titles only.
-    final semanticFuture =
-        _index.searchText(trimmed, limit: 240, threshold: 0.5);
+    final semanticFuture = _index
+        .searchText(trimmed, limit: 240, threshold: 0.5)
+        .timeout(const Duration(seconds: 30));
     final filenameFuture = _loadFilenameMatches(trimmed);
-    final semanticRows = await semanticFuture;
-    final filenameMatches = await filenameFuture;
+    List<SemanticSearchResult> semanticRows = const [];
+    List<GalleryImage> filenameMatches = const [];
+    Object? searchError;
+    try {
+      final results = await Future.wait<Object>([
+        semanticFuture,
+        filenameFuture,
+      ]);
+      semanticRows = results[0] as List<SemanticSearchResult>;
+      filenameMatches = results[1] as List<GalleryImage>;
+    } catch (error) {
+      searchError = error;
+      filenameMatches = await filenameFuture;
+    }
     if (!mounted) return;
     setState(() {
       _semanticResults = semanticRows
@@ -277,6 +303,15 @@ class HomePageState extends State<HomePage> {
       _semanticVisibleCount = _expandedPageSize;
       _filenameVisibleCount = _expandedPageSize;
     });
+    if (searchError != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Semantic search is still warming up. Filename matches are shown for now.',
+          ),
+        ),
+      );
+    }
   }
 
   void _runChipSearch(String query) {

@@ -202,6 +202,6 @@ class NativeEmbeddingStore(context: Context) :
 
     private companion object {
         private const val DatabaseName = "gallerymind_embeddings.db"
-        private const val DatabaseVersion = 2
+        private const val DatabaseVersion = 3
     }
 }
