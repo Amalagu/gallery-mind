@@ -1,0 +1,4 @@
+-keep class ai.onnxruntime.** { *; }
+-keep enum ai.onnxruntime.** { *; }
+-keep interface ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**
