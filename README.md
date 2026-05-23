@@ -19,20 +19,19 @@ embeddings locally, and lets you search your images with natural language.
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/images/img0.jpg" alt="Text-to-image search placeholder" width="100%">
+      <img src="assets/images/imgsample0.jpeg" alt="Text-to-image search placeholder" width="100%">
     </td>
     <td width="50%">
-      <img src="assets/images/img8.jpg" alt="Image-to-image similarity placeholder" width="100%">
+      <img src="assets/images/imgsample1.jpeg" alt="Image-to-image similarity placeholder" width="100%">
     </td>
   </tr>
   <tr>
-    <td align="center"><sub>Placeholder image from this repository: <code>assets/images/img0.jpg</code>.</sub></td>
-    <td align="center"><sub>Placeholder image from this repository: <code>assets/images/img8.jpg</code>.</sub></td>
+    <td align="center"><sub>Text-to-image search demo: <!-- <code>assets/images/img0.jpg</code> -->.</sub></td>
+    <td align="center"><sub>Image-to-image similarity Demo <!-- <code>assets/images/img8.jpg</code>. --></sub></td>
   </tr>
 </table>
 
-> These images are temporary README placeholders and will be replaced with real
-> GalleryMind screenshots/demo media later.
+> These images are real GalleryMind screenshots.
 
 ## Approach
 
@@ -162,7 +161,7 @@ If you reference GalleryMind, cite this repository:
 ```bibtex
 @Misc{gallerymind,
   title =        {GalleryMind: On-Device Semantic Gallery Search with Quantized OpenCLIP and ONNX Runtime},
-  author =       {AMALAGU},
+  author =       {Amalagu Chikezie},
   howpublished = {\url{https://github.com/AMALAGU/gallery-mind}},
   year =         {2026}
 }
