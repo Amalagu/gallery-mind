@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../data/sample_gallery.dart';
 import '../models/gallery_image.dart';
 import '../services/embedding_index.dart';
+import '../services/gallery_preferences.dart';
 import '../widgets/gallery_image_view.dart';
 
 // Full-screen viewer for a selected image. It supports Hero animation from the
@@ -16,6 +16,7 @@ class ImageDetailPage extends StatefulWidget {
     List<String>? heroTags,
     this.initialIndex = 0,
     this.heroPrefix = 'gallery-image',
+    this.similarityThreshold = GalleryPreferences.defaultSimilarityThreshold,
   })  : images = images ?? const [],
         heroTags = heroTags ?? const [];
 
@@ -25,6 +26,7 @@ class ImageDetailPage extends StatefulWidget {
   final List<String> heroTags;
   final int initialIndex;
   final String heroPrefix;
+  final int similarityThreshold;
 
   @override
   State<ImageDetailPage> createState() => _ImageDetailPageState();
@@ -115,14 +117,7 @@ class _ImageDetailPageState extends State<ImageDetailPage> {
                     return _DetailSheet(
                       key: ValueKey(_currentImage.id),
                       image: _currentImage,
-                      // Fallback matches keep the UI useful for sample assets
-                      // or if native similarity lookup fails.
-                      fallbackMatches: sampleGalleryImages
-                          .where(
-                              (candidate) => candidate.id != _currentImage.id)
-                          .where((candidate) => candidate.matchPercent >= 70)
-                          .toList(),
-                      similarityThreshold: 70,
+                      similarityThreshold: widget.similarityThreshold,
                       scrollController: scrollController,
                     );
                   },
@@ -282,13 +277,11 @@ class _DetailSheet extends StatelessWidget {
   const _DetailSheet({
     super.key,
     required this.image,
-    required this.fallbackMatches,
     required this.similarityThreshold,
     required this.scrollController,
   });
 
   final GalleryImage image;
-  final List<GalleryImage> fallbackMatches;
   final int similarityThreshold;
   final ScrollController scrollController;
 
@@ -313,8 +306,8 @@ class _DetailSheet extends StatelessWidget {
             children: [
               Expanded(child: _ImageCopy(image: image)),
               //TO BE IMPLEMENTED: Favorite button with native persistence. This is a great spot to show how the detail sheet can have multiple columns to take advantage of wider screen space.
-              /* const SizedBox(width: 12),
-              const _FavoriteButton(), */
+              const SizedBox(width: 12),
+              _FavoriteButton(imageId: image.id),
             ],
           ),
           //TO BE IMPLEMENTED: Tapping a tag should open a search for that tag, so these would be great to show off as Chips with tap effects. If an image has no tags, this row can be hidden to save space.
@@ -331,7 +324,6 @@ class _DetailSheet extends StatelessWidget {
           const SizedBox(width: 12),
           _SemanticMatches(
             currentImage: image,
-            fallbackMatches: fallbackMatches,
             similarityThreshold: similarityThreshold,
           ),
           const SizedBox(height: 24),
@@ -435,41 +427,98 @@ class _ImageCopy extends StatelessWidget {
     );
   }
 }
-/* 
-class _FavoriteButton extends StatelessWidget {
-  const _FavoriteButton();
+
+class _FavoriteButton extends StatefulWidget {
+  const _FavoriteButton({required this.imageId});
+
+  final String imageId;
+
+  @override
+  State<_FavoriteButton> createState() => _FavoriteButtonState();
+}
+
+class _FavoriteButtonState extends State<_FavoriteButton> {
+  final GalleryPreferences _preferences = GalleryPreferences();
+  bool _favorite = false;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFavorite();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FavoriteButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imageId != widget.imageId) _loadFavorite();
+  }
+
+  Future<void> _loadFavorite() async {
+    final favorite = await _preferences.isFavorite(widget.imageId);
+    if (!mounted) return;
+    setState(() {
+      _favorite = favorite;
+      _loading = false;
+    });
+  }
+
+  Future<void> _toggleFavorite() async {
+    if (_loading) return;
+    final next = !_favorite;
+    setState(() => _favorite = next);
+    await _preferences.setFavorite(widget.imageId, next);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            color: const Color(0xFF202550),
-            borderRadius: BorderRadius.circular(13),
+    final background =
+        _favorite ? const Color(0xFF8790FF) : const Color(0xFF171923);
+    final iconColor =
+        _favorite ? const Color(0xFF070812) : const Color(0xFFA4ACBF);
+    final labelColor =
+        _favorite ? const Color(0xFFE1E4FF) : const Color(0xFF8E94AA);
+
+    return GestureDetector(
+      onTap: _toggleFavorite,
+      child: Column(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: background,
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(
+                color: _favorite
+                    ? const Color(0xFFB7BCFF)
+                    : const Color(0xFF2B2E3A),
+              ),
+            ),
+            child: Icon(
+              _favorite
+                  ? Icons.favorite_rounded
+                  : Icons.favorite_border_rounded,
+              color: iconColor,
+              size: 24,
+            ),
           ),
-          child: const Icon(
-            Icons.favorite_rounded,
-            color: Color(0xFF9BA1FF),
-            size: 24,
+          const SizedBox(height: 5),
+          Text(
+            'Favorite',
+            style: TextStyle(
+              color: labelColor,
+              fontSize: 9,
+              letterSpacing: 0,
+            ),
           ),
-        ),
-        const SizedBox(height: 5),
-        const Text(
-          'Favorite',
-          style: TextStyle(
-            color: Color(0xFFA9AEC1),
-            fontSize: 9,
-            letterSpacing: 0,
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
-
+/*
 class _TagPill extends StatelessWidget {
   const _TagPill({required this.label});
 
@@ -508,12 +557,10 @@ class _TagPill extends StatelessWidget {
 class _SemanticMatches extends StatelessWidget {
   const _SemanticMatches({
     required this.currentImage,
-    required this.fallbackMatches,
     required this.similarityThreshold,
   });
 
   final GalleryImage currentImage;
-  final List<GalleryImage> fallbackMatches;
   final int similarityThreshold;
 
   Future<List<GalleryImage>> _loadMatches() async {
@@ -526,7 +573,7 @@ class _SemanticMatches extends StatelessWidget {
         threshold: threshold,
         limit: 30,
       );
-      if (results.isEmpty) return fallbackMatches;
+      if (results.isEmpty) return const [];
       // Convert native similarity results back into the same GalleryImage model
       // used by normal tiles and the detail viewer.
       return results
@@ -549,7 +596,7 @@ class _SemanticMatches extends StatelessWidget {
           )
           .toList(growable: false);
     } catch (_) {
-      return fallbackMatches;
+      return const [];
     }
   }
 
@@ -696,6 +743,7 @@ class _SemanticMatches extends StatelessWidget {
                       'semantic-match-${currentImage.id}-${candidate.id}',
                   ],
                   initialIndex: index,
+                  similarityThreshold: similarityThreshold,
                 );
               },
             );
@@ -738,6 +786,7 @@ class _MatchThumb extends StatelessWidget {
     required this.images,
     required this.heroTags,
     required this.initialIndex,
+    required this.similarityThreshold,
   });
 
   final GalleryImage image;
@@ -745,6 +794,7 @@ class _MatchThumb extends StatelessWidget {
   final List<GalleryImage> images;
   final List<String> heroTags;
   final int initialIndex;
+  final int similarityThreshold;
 
   void _openMatch(BuildContext context) {
     // Replace instead of stacking detail pages endlessly. The user can still
@@ -760,6 +810,7 @@ class _MatchThumb extends StatelessWidget {
             images: images,
             heroTags: heroTags,
             initialIndex: initialIndex,
+            similarityThreshold: similarityThreshold,
           );
         },
         transitionsBuilder: (context, animation, secondaryAnimation, child) {

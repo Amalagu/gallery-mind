@@ -153,6 +153,48 @@ class MainActivity : FlutterActivity() {
                         setOnboardingComplete()
                         result.success(true)
                     }
+                    "getIntPreference" -> {
+                        val key = call.argument<String>("key")
+                            ?: throw IllegalArgumentException("Missing preference key")
+                        val defaultValue = call.argument<Int>("defaultValue") ?: 0
+                        result.success(preferences().getInt(key, defaultValue))
+                    }
+                    "setIntPreference" -> {
+                        val key = call.argument<String>("key")
+                            ?: throw IllegalArgumentException("Missing preference key")
+                        val value = call.argument<Int>("value") ?: 0
+                        preferences().edit().putInt(key, value).apply()
+                        result.success(true)
+                    }
+                    "getBoolPreference" -> {
+                        val key = call.argument<String>("key")
+                            ?: throw IllegalArgumentException("Missing preference key")
+                        val defaultValue = call.argument<Boolean>("defaultValue") ?: false
+                        result.success(preferences().getBoolean(key, defaultValue))
+                    }
+                    "setBoolPreference" -> {
+                        val key = call.argument<String>("key")
+                            ?: throw IllegalArgumentException("Missing preference key")
+                        val value = call.argument<Boolean>("value") ?: false
+                        preferences().edit().putBoolean(key, value).apply()
+                        result.success(true)
+                    }
+                    "getStringListPreference" -> {
+                        val key = call.argument<String>("key")
+                            ?: throw IllegalArgumentException("Missing preference key")
+                        val values = preferences()
+                            .getStringSet(key, emptySet<String>())
+                            ?.toList()
+                            ?: emptyList<String>()
+                        result.success(values)
+                    }
+                    "setStringListPreference" -> {
+                        val key = call.argument<String>("key")
+                            ?: throw IllegalArgumentException("Missing preference key")
+                        val values = call.argument<List<String>>("value") ?: emptyList()
+                        preferences().edit().putStringSet(key, values.toSet()).apply()
+                        result.success(true)
+                    }
                     "close" -> runAsync(result) {
                         clipBridge.close()
                         true
@@ -278,11 +320,13 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun setOnboardingComplete() {
-        getSharedPreferences(prefsName, MODE_PRIVATE)
+        preferences()
             .edit()
             .putBoolean(onboardingCompleteKey, true)
             .apply()
     }
+
+    private fun preferences() = getSharedPreferences(prefsName, MODE_PRIVATE)
 }
 
 private fun FloatArray.toDoubleArray(): DoubleArray {

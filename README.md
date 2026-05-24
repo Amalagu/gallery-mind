@@ -19,15 +19,15 @@ embeddings locally, and lets you search your images with natural language.
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/images/imgsample0.jpeg" alt="Text-to-image search placeholder" width="100%">
+      <img src="docs/images/imgsample0.jpeg" alt="Text-to-image search placeholder" width="100%">
     </td>
     <td width="50%">
-      <img src="assets/images/imgsample1.jpeg" alt="Image-to-image similarity placeholder" width="100%">
+      <img src="docs/images/imgsample1.jpeg" alt="Image-to-image similarity placeholder" width="100%">
     </td>
   </tr>
   <tr>
-    <td align="center"><sub>Text-to-image search demo: <!-- <code>assets/images/img0.jpg</code> -->.</sub></td>
-    <td align="center"><sub>Image-to-image similarity Demo <!-- <code>assets/images/img8.jpg</code>. --></sub></td>
+    <td align="center"><sub>Text-to-image search demo.</sub></td>
+    <td align="center"><sub>Image-to-image similarity demo.</sub></td>
   </tr>
 </table>
 

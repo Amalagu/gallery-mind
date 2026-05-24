@@ -15,8 +15,7 @@ class GalleryImage {
   });
 
   final String id;
-  // assetPath can be either a bundled asset path such as assets/images/img1.jpg
-  // or an Android content:// URI for a real gallery photo.
+  // assetPath is normally an Android content:// URI for a real gallery photo.
   final String assetPath;
   final String title;
   final String description;

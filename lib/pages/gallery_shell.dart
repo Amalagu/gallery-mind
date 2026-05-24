@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../widgets/aura_bottom_nav.dart';
+import '../services/gallery_preferences.dart';
+import 'albums_page.dart';
 import 'home_page.dart';
-import 'placeholder_page.dart';
+import 'settings_page.dart';
 
-// GalleryShell owns the main tab layout. The Home page is the center tab, while
-// Albums and Settings are placeholders until those screens are built out.
+// GalleryShell owns the main tab layout and the small set of preferences that
+// need to be shared across Home, Albums, Settings, and Image Detail routes.
 class GalleryShell extends StatefulWidget {
   const GalleryShell({super.key});
 
@@ -18,8 +20,38 @@ class _GalleryShellState extends State<GalleryShell> {
   // The key lets the shell ask HomePage whether it wants to consume the Android
   // back button first, for example to collapse search results.
   final GlobalKey<HomePageState> _homeKey = GlobalKey<HomePageState>();
+  final GlobalKey<AlbumsPageState> _albumsKey = GlobalKey<AlbumsPageState>();
+  final GalleryPreferences _preferences = GalleryPreferences();
   int selectedIndex = 1;
+  int _similarityThreshold = GalleryPreferences.defaultSimilarityThreshold;
+  bool _showFilenameMatches = GalleryPreferences.defaultShowFilenameMatches;
   DateTime? _lastBackPressedAt;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPreferences();
+  }
+
+  Future<void> _loadPreferences() async {
+    final threshold = await _preferences.getSimilarityThreshold();
+    final showFilenameMatches = await _preferences.getShowFilenameMatches();
+    if (!mounted) return;
+    setState(() {
+      _similarityThreshold = threshold;
+      _showFilenameMatches = showFilenameMatches;
+    });
+  }
+
+  Future<void> _setSimilarityThreshold(int value) async {
+    setState(() => _similarityThreshold = value);
+    await _preferences.setSimilarityThreshold(value);
+  }
+
+  Future<void> _setShowFilenameMatches(bool value) async {
+    setState(() => _showFilenameMatches = value);
+    await _preferences.setShowFilenameMatches(value);
+  }
 
   Future<void> _handleBack() async {
     // If the user is not on Home, back simply returns to the center Home tab.
@@ -56,21 +88,24 @@ class _GalleryShellState extends State<GalleryShell> {
 
   @override
   Widget build(BuildContext context) {
-    // Each tab is kept simple here; AnimatedSwitcher gives a soft transition
-    // when the selected tab changes.
+    // IndexedStack keeps each tab alive. That prevents Home from restarting its
+    // background indexing check every time the user visits Albums or Settings.
     final pages = <Widget>[
-      const PlaceholderPage(
-        key: ValueKey('albums'),
-        icon: Icons.photo_album_rounded,
-        title: 'Albums',
-        subtitle: 'Collections screen coming next.',
+      AlbumsPage(
+        key: _albumsKey,
+        similarityThreshold: _similarityThreshold,
       ),
-      HomePage(key: _homeKey),
-      const PlaceholderPage(
-        key: ValueKey('settings'),
-        icon: Icons.settings_rounded,
-        title: 'Settings',
-        subtitle: 'Preferences and model controls will live here.',
+      HomePage(
+        key: _homeKey,
+        similarityThreshold: _similarityThreshold,
+        showFilenameMatches: _showFilenameMatches,
+      ),
+      SettingsPage(
+        key: const ValueKey('settings'),
+        similarityThreshold: _similarityThreshold,
+        showFilenameMatches: _showFilenameMatches,
+        onSimilarityThresholdChanged: _setSimilarityThreshold,
+        onShowFilenameMatchesChanged: _setShowFilenameMatches,
       ),
     ];
 
@@ -89,9 +124,9 @@ class _GalleryShellState extends State<GalleryShell> {
               constraints: const BoxConstraints(maxWidth: 430),
               child: Stack(
                 children: [
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 260),
-                    child: pages[selectedIndex],
+                  IndexedStack(
+                    index: selectedIndex,
+                    children: pages,
                   ),
                   Positioned(
                     left: 34,
@@ -105,6 +140,11 @@ class _GalleryShellState extends State<GalleryShell> {
                           return;
                         }
                         setState(() => selectedIndex = index);
+                        if (index == 0) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            _albumsKey.currentState?.reloadFavorites();
+                          });
+                        }
                         if (index == 1) {
                           WidgetsBinding.instance.addPostFrameCallback((_) {
                             _homeKey.currentState?.resetToInitialHome();

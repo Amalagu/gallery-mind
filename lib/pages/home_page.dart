@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../data/sample_gallery.dart';
 import '../models/gallery_image.dart';
 import '../services/embedding_index.dart';
 import '../widgets/gallery_image_view.dart';
@@ -11,7 +10,14 @@ import 'image_detail_page.dart';
 // HomePage is the main gallery and search screen. It shows all indexed images
 // by date, runs semantic filename searches, and opens image details.
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({
+    super.key,
+    required this.similarityThreshold,
+    required this.showFilenameMatches,
+  });
+
+  final int similarityThreshold;
+  final bool showFilenameMatches;
 
   @override
   State<HomePage> createState() => HomePageState();
@@ -32,7 +38,7 @@ class HomePageState extends State<HomePage> {
   // _images is the normal gallery list. The two result lists are deliberately
   // separate because semantic CLIP results and literal filename matches have
   // different meanings and thresholds.
-  List<GalleryImage> _images = sampleGalleryImages;
+  List<GalleryImage> _images = const [];
   List<GalleryImage> _semanticResults = const [];
   List<GalleryImage> _filenameResults = const [];
   String _currentQuery = '';
@@ -45,6 +51,8 @@ class HomePageState extends State<HomePage> {
   bool _backgroundIndexingActive = false;
   bool _indexingCardCollapsed = false;
   bool _indexingCompleteVisible = false;
+  bool _hasPhotoPermission = true;
+  bool _requestingPhotoAccess = false;
   SearchResultSection? _expandedSection;
   int _semanticVisibleCount = _expandedPageSize;
   int _filenameVisibleCount = _expandedPageSize;
@@ -76,6 +84,16 @@ class HomePageState extends State<HomePage> {
     super.dispose();
   }
 
+  @override
+  void didUpdateWidget(covariant HomePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.showFilenameMatches != widget.showFilenameMatches &&
+        _showingSearchResults &&
+        _currentQuery.isNotEmpty) {
+      unawaited(_runSearch(_currentQuery));
+    }
+  }
+
   bool get _hasActiveSearch =>
       _searchController.text.trim().isNotEmpty || _showingSearchResults;
   bool get _isSearchShellActive =>
@@ -83,6 +101,7 @@ class HomePageState extends State<HomePage> {
   bool get _isPlainHomeState => !_isSearchShellActive;
   bool get _showIndexingCard =>
       _backgroundIndexingActive || _indexingCompleteVisible;
+  bool get _showPhotoAccessCard => !_hasPhotoPermission;
 
   double get _indexingFraction {
     if (_indexingTotal <= 0) return 0;
@@ -147,13 +166,14 @@ class HomePageState extends State<HomePage> {
   Future<void> _loadIndexedImages({bool resetViewState = true}) async {
     try {
       // Pull the native SQLite records into Dart models for the normal gallery.
-      // The sample images are a fallback for development or empty indexes.
-      final records = await _index.getAllIndexedImages(limit: 5000);
+      final hasPermission = await _index.hasPhotoPermission();
+      final records = hasPermission
+          ? await _index.getAllIndexedImages(limit: 5000)
+          : const <IndexedImageRecord>[];
       if (!mounted) return;
       setState(() {
-        _images = records.isEmpty
-            ? sampleGalleryImages
-            : records.map(_imageFromRecord).toList(growable: false);
+        _hasPhotoPermission = hasPermission;
+        _images = records.map(_imageFromRecord).toList(growable: false);
         _indexingStored = records.length;
         _loading = false;
         if (resetViewState) {
@@ -164,7 +184,8 @@ class HomePageState extends State<HomePage> {
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _images = sampleGalleryImages;
+        _hasPhotoPermission = false;
+        _images = const [];
         _loading = false;
         if (resetViewState) {
           _showingSearchResults = false;
@@ -177,14 +198,25 @@ class HomePageState extends State<HomePage> {
   Future<void> _startBackgroundIndexing() async {
     if (_backgroundIndexStarted || _disposed) return;
     _backgroundIndexStarted = true;
+    if (!await _index.hasPhotoPermission()) {
+      if (!_disposed && mounted) {
+        setState(() {
+          _hasPhotoPermission = false;
+          _backgroundIndexingActive = false;
+          _indexingCompleteVisible = false;
+        });
+      }
+      return;
+    }
 
     setState(() {
-      _backgroundIndexingActive = true;
+      _hasPhotoPermission = true;
       _indexingCompleteVisible = false;
       _indexingCardCollapsed = false;
     });
 
     try {
+      var indexedAnyImages = false;
       while (!_disposed) {
         var lastReloadAt = 0;
         final storedBeforeBatch = _indexingStored;
@@ -196,6 +228,7 @@ class HomePageState extends State<HomePage> {
                 ? _indexingTotal
                 : storedBeforeBatch + progress.total;
             setState(() {
+              _backgroundIndexingActive = progress.total > 0;
               _indexingTotal = estimatedTotal;
               _indexingStored = (storedBeforeBatch + progress.indexed)
                   .clamp(0, estimatedTotal == 0 ? 1 << 30 : estimatedTotal)
@@ -211,6 +244,7 @@ class HomePageState extends State<HomePage> {
         );
 
         if (_disposed || !mounted) return;
+        indexedAnyImages = indexedAnyImages || summary.indexed > 0;
         setState(() {
           _indexingTotal = summary.totalGalleryImages;
           _indexingStored = summary.stored;
@@ -231,7 +265,7 @@ class HomePageState extends State<HomePage> {
       if (_disposed || !mounted) return;
       setState(() {
         _backgroundIndexingActive = false;
-        _indexingCompleteVisible = _indexingTotal > 0;
+        _indexingCompleteVisible = indexedAnyImages;
         _indexingStored = _indexingTotal > 0 ? _indexingTotal : _indexingStored;
       });
 
@@ -268,10 +302,27 @@ class HomePageState extends State<HomePage> {
     });
     // Semantic search uses the CLIP text embedding. Filename matching is a
     // separate literal text search over stored image titles only.
+    final hasPhotoPermission = await _index.hasPhotoPermission();
+    if (!hasPhotoPermission) {
+      if (!mounted) return;
+      setState(() {
+        _hasPhotoPermission = hasPhotoPermission;
+        _semanticResults = const [];
+        _filenameResults = const [];
+        _searching = false;
+        _showingSearchResults = true;
+        _expandedSection = null;
+        _semanticVisibleCount = _expandedPageSize;
+        _filenameVisibleCount = _expandedPageSize;
+      });
+      return;
+    }
     final semanticFuture = _index
         .searchText(trimmed, limit: 240, threshold: 0.5)
         .timeout(const Duration(seconds: 30));
-    final filenameFuture = _loadFilenameMatches(trimmed);
+    final filenameFuture = widget.showFilenameMatches
+        ? _loadFilenameMatches(trimmed)
+        : Future<List<GalleryImage>>.value(const []);
     List<SemanticSearchResult> semanticRows = const [];
     List<GalleryImage> filenameMatches = const [];
     Object? searchError;
@@ -326,6 +377,7 @@ class HomePageState extends State<HomePage> {
     try {
       // Filename search intentionally ignores captions/descriptions. Those are
       // already represented in the semantic embedding pipeline.
+      if (!await _index.hasPhotoPermission()) return const [];
       final records = await _index.getAllIndexedImages(limit: 5000);
       final normalizedQuery = query.toLowerCase();
       return records
@@ -334,10 +386,7 @@ class HomePageState extends State<HomePage> {
           .map((record) => _imageFromRecord(record))
           .toList(growable: false);
     } catch (_) {
-      final normalizedQuery = query.toLowerCase();
-      return sampleGalleryImages
-          .where((image) => image.title.toLowerCase().contains(normalizedQuery))
-          .toList(growable: false);
+      return const [];
     }
   }
 
@@ -406,6 +455,45 @@ class HomePageState extends State<HomePage> {
       if (mounted) {
         setState(() => _refreshing = false);
       }
+    }
+  }
+
+  Future<void> _requestPhotoAccessFromHome() async {
+    if (_requestingPhotoAccess) return;
+    setState(() => _requestingPhotoAccess = true);
+    try {
+      final granted = await _index.requestPhotoPermission();
+      if (!mounted) return;
+      if (!granted) {
+        setState(() => _hasPhotoPermission = false);
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('Photo access was not granted'),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        return;
+      }
+      setState(() {
+        _hasPhotoPermission = true;
+        _backgroundIndexStarted = false;
+      });
+      await _loadIndexedImages(resetViewState: false);
+      unawaited(_startBackgroundIndexing());
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Could not request photo access'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _requestingPhotoAccess = false);
     }
   }
 
@@ -503,6 +591,7 @@ class HomePageState extends State<HomePage> {
               height: HomeTopChrome.height(
                 showIndexingCard: _showIndexingCard,
                 indexingCardCollapsed: _indexingCardCollapsed,
+                showPhotoAccessCard: _showPhotoAccessCard,
               ),
               child: HomeTopChrome(
                 searchController: _searchController,
@@ -522,6 +611,9 @@ class HomePageState extends State<HomePage> {
                     _indexingCardCollapsed = !_indexingCardCollapsed;
                   });
                 },
+                showPhotoAccessCard: _showPhotoAccessCard,
+                requestingPhotoAccess: _requestingPhotoAccess,
+                onAllowPhotos: _requestPhotoAccessFromHome,
               ),
             ),
           )
@@ -532,6 +624,7 @@ class HomePageState extends State<HomePage> {
               height: SearchTopChrome.height(
                 showIndexingCard: _showIndexingCard,
                 indexingCardCollapsed: _indexingCardCollapsed,
+                showPhotoAccessCard: _showPhotoAccessCard,
               ),
               child: SearchTopChrome(
                 controller: _searchController,
@@ -550,6 +643,9 @@ class HomePageState extends State<HomePage> {
                     _indexingCardCollapsed = !_indexingCardCollapsed;
                   });
                 },
+                showPhotoAccessCard: _showPhotoAccessCard,
+                requestingPhotoAccess: _requestingPhotoAccess,
+                onAllowPhotos: _requestPhotoAccessFromHome,
               ),
             ),
           ),
@@ -564,12 +660,15 @@ class HomePageState extends State<HomePage> {
             child: Center(child: CircularProgressIndicator()),
           )
         else if (_images.isEmpty)
-          const SliverFillRemaining(
+          SliverFillRemaining(
             hasScrollBody: false,
             child: Center(
               child: Text(
-                'No indexed matches yet',
-                style: TextStyle(
+                _hasPhotoPermission
+                    ? 'No indexed images yet'
+                    : 'Photo access is needed to show your gallery',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
                   color: Color(0xFFAEB4CA),
                   fontSize: 14,
                   fontWeight: FontWeight.w700,
@@ -622,6 +721,7 @@ class HomePageState extends State<HomePage> {
           topPadding: 14,
           bottomPadding: index == sections.length - 1 ? 112 : 0,
           sourceImages: images,
+          similarityThreshold: widget.similarityThreshold,
         ),
       );
     }
@@ -727,6 +827,7 @@ class HomePageState extends State<HomePage> {
           bottomPadding: _filenameResults.isEmpty ? 112 : 0,
           onSeeMore: () => _expandSection(SearchResultSection.semantic),
           heroPrefix: 'semantic-result',
+          similarityThreshold: widget.similarityThreshold,
         ),
       ]);
     }
@@ -744,6 +845,7 @@ class HomePageState extends State<HomePage> {
           bottomPadding: 112,
           onSeeMore: () => _expandSection(SearchResultSection.filename),
           heroPrefix: 'filename-result',
+          similarityThreshold: widget.similarityThreshold,
         ),
       ]);
     }
@@ -788,6 +890,7 @@ class HomePageState extends State<HomePage> {
           bottomPadding: images.length >= totalCount ? 112 : 24,
           sourceImages: images,
           heroPrefix: 'expanded-result',
+          similarityThreshold: widget.similarityThreshold,
         ),
         if (images.length < totalCount)
           const SliverToBoxAdapter(
@@ -862,6 +965,7 @@ class SearchPreviewGrid extends StatelessWidget {
     required this.onSeeMore,
     required this.heroPrefix,
     required this.topPadding,
+    required this.similarityThreshold,
     this.bottomPadding = 0,
   });
 
@@ -871,6 +975,7 @@ class SearchPreviewGrid extends StatelessWidget {
   final String heroPrefix;
   final double topPadding;
   final double bottomPadding;
+  final int similarityThreshold;
 
   @override
   Widget build(BuildContext context) {
@@ -901,6 +1006,7 @@ class SearchPreviewGrid extends StatelessWidget {
             sourceImages: images,
             sourceIndex: index,
             heroPrefix: heroPrefix,
+            similarityThreshold: similarityThreshold,
           );
         },
       ),
@@ -976,6 +1082,7 @@ class GalleryGrid extends StatelessWidget {
     this.bottomPadding = 0,
     this.sourceImages,
     this.heroPrefix = 'gallery-image',
+    required this.similarityThreshold,
   });
 
   final List<GalleryImage> images;
@@ -983,6 +1090,7 @@ class GalleryGrid extends StatelessWidget {
   final double bottomPadding;
   final List<GalleryImage>? sourceImages;
   final String heroPrefix;
+  final int similarityThreshold;
 
   @override
   Widget build(BuildContext context) {
@@ -1010,6 +1118,7 @@ class GalleryGrid extends StatelessWidget {
             sourceImages: source,
             sourceIndex: sourceIndex < 0 ? index : sourceIndex,
             heroPrefix: heroPrefix,
+            similarityThreshold: similarityThreshold,
           );
         },
       ),
@@ -1033,16 +1142,21 @@ class HomeTopChrome extends StatelessWidget {
     required this.indexingTotal,
     required this.indexingFraction,
     required this.onToggleIndexingCard,
+    required this.showPhotoAccessCard,
+    required this.requestingPhotoAccess,
+    required this.onAllowPhotos,
   });
 
   static double height({
     required bool showIndexingCard,
     required bool indexingCardCollapsed,
+    required bool showPhotoAccessCard,
   }) {
     return 183 +
         (showIndexingCard
             ? IndexingProgressCard.height(collapsed: indexingCardCollapsed) + 10
-            : 0);
+            : 0) +
+        (showPhotoAccessCard ? PhotoAccessCard.height + 10 : 0);
   }
 
   final TextEditingController searchController;
@@ -1058,6 +1172,9 @@ class HomeTopChrome extends StatelessWidget {
   final int indexingTotal;
   final double indexingFraction;
   final VoidCallback onToggleIndexingCard;
+  final bool showPhotoAccessCard;
+  final bool requestingPhotoAccess;
+  final VoidCallback onAllowPhotos;
 
   @override
   Widget build(BuildContext context) {
@@ -1094,6 +1211,13 @@ class HomeTopChrome extends StatelessWidget {
             ),
             const SizedBox(height: 10),
           ],
+          if (showPhotoAccessCard) ...[
+            PhotoAccessCard(
+              requesting: requestingPhotoAccess,
+              onAllowPhotos: onAllowPhotos,
+            ),
+            const SizedBox(height: 10),
+          ],
           FilterRow(onSelected: onChipSelected),
           const SizedBox(height: 16),
         ],
@@ -1117,16 +1241,21 @@ class SearchTopChrome extends StatelessWidget {
     required this.indexingTotal,
     required this.indexingFraction,
     required this.onToggleIndexingCard,
+    required this.showPhotoAccessCard,
+    required this.requestingPhotoAccess,
+    required this.onAllowPhotos,
   });
 
   static double height({
     required bool showIndexingCard,
     required bool indexingCardCollapsed,
+    required bool showPhotoAccessCard,
   }) {
     return 74 +
         (showIndexingCard
             ? IndexingProgressCard.height(collapsed: indexingCardCollapsed) + 8
-            : 0);
+            : 0) +
+        (showPhotoAccessCard ? PhotoAccessCard.height + 8 : 0);
   }
 
   final TextEditingController controller;
@@ -1141,6 +1270,9 @@ class SearchTopChrome extends StatelessWidget {
   final int indexingTotal;
   final double indexingFraction;
   final VoidCallback onToggleIndexingCard;
+  final bool showPhotoAccessCard;
+  final bool requestingPhotoAccess;
+  final VoidCallback onAllowPhotos;
 
   @override
   Widget build(BuildContext context) {
@@ -1169,8 +1301,111 @@ class SearchTopChrome extends StatelessWidget {
                 onTap: onToggleIndexingCard,
               ),
             ],
+            if (showPhotoAccessCard) ...[
+              const SizedBox(height: 8),
+              PhotoAccessCard(
+                requesting: requestingPhotoAccess,
+                onAllowPhotos: onAllowPhotos,
+              ),
+            ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class PhotoAccessCard extends StatelessWidget {
+  const PhotoAccessCard({
+    super.key,
+    required this.requesting,
+    required this.onAllowPhotos,
+  });
+
+  static const double height = 70;
+
+  final bool requesting;
+  final VoidCallback onAllowPhotos;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: height,
+      padding: const EdgeInsets.fromLTRB(13, 11, 10, 11),
+      decoration: BoxDecoration(
+        color: const Color(0xFF271018),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF7A2637)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: const BoxDecoration(
+              color: Color(0xFF4B1724),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.info_outline_rounded,
+              color: Color(0xFFFF6B7A),
+              size: 18,
+            ),
+          ),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Photo access is off',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Color(0xFFFFD7DD),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0,
+                  ),
+                ),
+                SizedBox(height: 3),
+                Text(
+                  'Allow access to index and search your gallery.',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Color(0xFFD69AA5),
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: requesting ? null : onAllowPhotos,
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF070812),
+              backgroundColor: const Color(0xFFFF6B7A),
+              disabledForegroundColor: const Color(0xFF7E4F58),
+              disabledBackgroundColor: const Color(0xFF3B1A24),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              minimumSize: const Size(96, 36),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              textStyle: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0,
+              ),
+            ),
+            child: Text(requesting ? 'Opening' : 'Allow Photos'),
+          ),
+        ],
       ),
     );
   }
@@ -1388,11 +1623,7 @@ class HomeHeader extends StatelessWidget {
             Icons.auto_awesome_rounded,
             color: Color(0xFF8790FF),
             size: 22,
-          ), /* const Icon(
-            Icons.photo_library_rounded,
-            size: 16,
-            color: Color(0xFF8D95FF),
-          ), */
+          ),
         ),
         const SizedBox(width: 10),
         const Text(
@@ -1403,38 +1634,6 @@ class HomeHeader extends StatelessWidget {
             letterSpacing: 0,
           ),
         ),
-        // TO BE IMPLEMENTED:
-        /*const Spacer(),
-        Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: const Color(0xFF706CF8), width: 2),
-                image: const DecorationImage(
-                  image: AssetImage('assets/images/img2.jpg'),
-                  fit: BoxFit.cover,
-                ),
-              ),
-            ),
-            Positioned(
-              right: -1,
-              top: -1,
-              child: Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF17D77C),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xFF060710), width: 2),
-                ),
-              ),
-            ),
-          ],
-        ), */
       ],
     );
   }
@@ -1801,6 +2000,7 @@ class GalleryTile extends StatefulWidget {
     required this.sourceImages,
     required this.sourceIndex,
     required this.heroPrefix,
+    required this.similarityThreshold,
   });
 
   final GalleryImage image;
@@ -1808,6 +2008,7 @@ class GalleryTile extends StatefulWidget {
   final List<GalleryImage> sourceImages;
   final int sourceIndex;
   final String heroPrefix;
+  final int similarityThreshold;
 
   @override
   State<GalleryTile> createState() => _GalleryTileState();
@@ -1837,6 +2038,7 @@ class _GalleryTileState extends State<GalleryTile> {
             ),
             initialIndex: widget.sourceIndex,
             heroPrefix: widget.heroPrefix,
+            similarityThreshold: widget.similarityThreshold,
           );
         },
         transitionsBuilder: (context, animation, secondaryAnimation, child) {

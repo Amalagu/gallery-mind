@@ -94,11 +94,9 @@ class _StartupIndexPageState extends State<StartupIndexPage> {
 
       if (!mounted) return;
       if (!granted) {
-        setState(() {
-          _permissionDenied = true;
-          _bootstrapping = false;
-          _status = 'Photo permission is needed to build your private index.';
-        });
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute<void>(builder: (_) => const GalleryShell()),
+        );
         return;
       }
 
